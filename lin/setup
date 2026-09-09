@@ -1,0 +1,71 @@
+[ $1 ] && target=${USER}-${1}-holo
+[ ! $1 ] && target=${USER}-holo
+# get ssh key for bits
+bits_key=$(ssh -T git@bits.linode.com -v 2>&1 | grep accepts |cut -d' ' -f5)
+echo bits_key $bits_key
+[ ! -f $bits_key ] && echo unable to determine auth to bits && return
+ssh_key="$(cat $bits_key | base64)" 
+# ingest ~/.netrc
+[ ! -f ~/.netrc ] && echo "please create ~/.netrc" && return
+netrc="$(cat ~/.netrc | base64)" 
+#[ ! -f ssh_key ] && echo "please populate ssh_key with github key" && return
+#ssh_key="$(cat ssh_key | base64)" 
+
+# cleanup
+lid=$(linode-cli linodes ls --label ${target}-1 --text --no-headers | cut -f1)
+[ -n "$lid" ] && echo "removing holodeck $target" && ./cleanup $target
+
+# create holodeck
+create_vpc() {
+  echo creating vpc ${1}-vpc
+  linode-cli vpcs create --label ${1}-vpc --region pl-labkrk-2
+  vid=$(linode-cli vpcs ls --label ${1}-vpc --text --no-headers --all-rows | cut -f1)
+  echo vid $vid
+  [ ! -n "$vid" ] && echo "VPC ${1}-vpc creation failed" && exit
+  linode-cli vpcs subnet-create --label one --ipv4 10.0.1.0/24 $vid
+  nid1=$(linode-cli vpcs subnets-ls --label one --text --no-headers --all-rows $vid | cut -f1)
+  linode-cli vpcs subnet-create --label two --ipv4 10.0.2.0/24 $vid
+  nid2=$(linode-cli vpcs subnets-ls --label two --text --no-headers --all-rows $vid | cut -f1)
+}
+create_linode() {
+  echo creating linode $1
+  echo 2 $2 3 $3
+  [ -n "$2" ] && type="$2" || type="g6-nanode-1"
+  [ -n "$3" ] && cloudfile="$3" || cloudfile="cloud-config.yaml"
+  echo type $type cloudfile $cloudfile
+  cloudconfigvar="$(cat $cloudfile | sed "s/examplehost/$1/" | \
+    sed "s/netrcbase64/$netrc/" | sed "s/ssh_keybase64/$ssh_key/" | base64)"
+  linode-cli linodes create --image linode/ubuntu22.04 --region pl-labkrk-2 \
+    --root_pass aComplex@Password --authorized_users alaird-sis --type $type \
+    --label $1 --metadata.user_data "$cloudconfigvar" 
+  lid=$(linode-cli linodes ls --label $1 --text --no-headers --all-rows | cut -f1)
+  cid=$(linode-cli linodes configs-list $lid --text --no-headers --all-rows | cut -f1)
+  ERR=$?
+  [ "$ERR" -ne 0 ] && echo ERROR - not able to create $target && return
+}
+create_vpc $target
+create_linode ${target}-jb1
+#echo lid $lid cid $cid vid $vid nid1 $nid1 nid2 $nid2
+linode-cli linodes config-interface-add --purpose public --primary true $lid $cid
+linode-cli linodes config-interface-add --purpose vpc --primary false --subnet_id $nid1 --ipv4.vpc 10.0.1.10 $lid $cid
+
+create_linode ${target}-jb2
+linode-cli linodes config-interface-add --purpose public --primary true $lid $cid
+linode-cli linodes config-interface-add --purpose vpc --primary false --subnet_id $nid2 --ipv4.vpc 10.0.2.20 $lid $cid
+
+create_linode ${target}-1 g6-standard-4 cloud-config-root.yaml
+linode-cli linodes config-interface-add --purpose public --primary true $lid $cid
+linode-cli linodes config-interface-add --purpose vpc --primary false --subnet_id $nid1 --ipv4.vpc 10.0.1.11 $lid $cid
+
+create_linode ${target}-2
+linode-cli linodes config-interface-add --purpose vpc --primary false --subnet_id $nid2 --ipv4.vpc 10.0.2.22 $lid $cid
+#create_linode ${target}-2
+make_ssh_config
+#while ! ssh $target "echo '$target is available'"; do echo -n "."; sleep 5; done
+#scp -o ConnectTimeout=90 ~/.netrc $target:.
+#ssh $target "hostnamectl set-hostname $target"
+#
+# ansible-galaxy collection install community.general
+# ansible-galaxy collection install community.docker
+# devenv setup --dir /root/cometlab-setup --root-password aComplex@Password
+

@@ -1,0 +1,80 @@
+#cloud-config
+# Perform System Updates
+package_update: true
+package_upgrade: true
+
+# Configure server details
+#timezone: 'US/Central'
+hostname: examplehost
+
+output: { all: "| tee -a /var/log/cloud-init-output.log" }
+
+write_files:
+  - path: /root/.netrc
+    encoding: "base64"
+    content: "netrcbase64"
+    permissions: '0600'
+  - path: /root/.ssh/id_rsa
+    encoding: "base64"
+    content: "ssh_keybase64"
+    permissions: '0600'
+  - path: /root/setup.sh
+    content: |
+      #!/bin/bash
+      echo "------------------ \n starting cloud-init setup.sh in /root"
+      [ ! -d /root/.ssh ] && mkdir /root/.ssh
+      ssh-keyscan bits.linode.com >> /root/.ssh/known_hosts
+      echo "------------------ \n install docker"
+      curl -fsSL https://get.docker.com -o get-docker.sh; sh get-docker.sh
+      echo "------------------ \n downloading certs"
+      mkdir /root/.certs
+      curl -sk https://vault.devcloud.linode.com:8200/v1/pki/ca/pem | \
+        tee /root/.certs/LinodeDevCloudRoot-G1.crt
+      curl -fsSL https://us-east-1.linodeobjects.com/linode-internal-ca/cacert-2019.pem \
+        -o /root/.certs/linode-2019.crt
+      cp /root/.certs/* /usr/local/share/ca-certificates/
+      update-ca-certificates
+      echo "------------------ \n config files"
+      git config --system url.\"https://github.com/\".insteadOf git@github.com:
+      mkdir -p /root/.config/devenv
+      touch /root/.config/devenv/acksec
+      echo /root/devenv/repos > /root/.config/devenv/repodir
+      mkdir -p /root/.config/pip
+      echo "[global]\ncert = ~/.certs/linode-2019.crt\nindex-url = https://artifactory.linode.com/artifactory/api/pypi/pypi-virtual/simple" > /root/.config/pip/pip.conf
+      echo "------------------\n creating venv"
+      python3 -m venv /root/venv
+      echo "source ~/venv/bin/activate" >> .profile
+      echo "------------------\n activating venv"
+      . /root/venv/bin/activate
+      pip install --upgrade pip
+      pip install akamai-devenv
+      pip install ansible-core
+      pip install requests 
+      ansible-galaxy collection install community.general
+      ansible-galaxy collection install community.docker
+      echo "------------------\n configure dave's registry"
+      echo -e "{\n  \"insecure-registries\": [\"172.24.237.176:5000\"]\n}" > /etc/docker/daemon.json
+      echo "------------------\n ladding lzd alias for lazydocker"
+      echo "alias lzd='docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v /root/.config/lazydocker:/.config/jesseduffield/lazydocker lazyteam/lazydocker'" >> /root/.profile
+      echo "------------------\n setup.sh done"
+      touch /root/setup.done
+    permissions: '0755'
+
+runcmd:
+  - [ cd, /root ]
+  - [ sh, "/root/setup.sh" ]
+  #- [ /usr/bin/git, clone, "git@bits.linode.com:Linode/cometlab-setup.git" ]
+  #- [ ., /root/venv/bin/activate ]
+  #- [ devenv, setup, "--dir", "/root", "--root-password", "aComplex@Password" ]
+  #- [ ln, "-s", "/root/devenv", "/cometlab-setup/devenv" ]
+  #- [ touch, /root/.devenv_setup.done ]
+  #- [ reboot ]
+
+# Install additional software packages
+packages:
+  - python3-pip
+  - python3-venv
+  - rsync
+  - git
+  #- podman-docker
+  - pipx
